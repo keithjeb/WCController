@@ -42,8 +42,7 @@ LiquidCrystal_I2C	lcd(I2C_ADDR, En_pin, Rw_pin, Rs_pin, D4_pin, D5_pin, D6_pin, 
 //=================================================
 // Forward declaration of the menu elements
 extern M2tk m2;
-M2_EXTERN_ALIGN(el_f1_diag);
-M2_EXTERN_ALIGN(el_f2_diag);
+M2_EXTERN_ALIGN(el_fan_diag);
 M2_EXTERN_ALIGN(el_cont_diag);
 
 //Some waiting variables for the various loops
@@ -53,21 +52,46 @@ uint8_t backlight_delay = 500; //default to polling backlight every 500ms ish
 uint8_t fan_delay;
 
 //some boolean state variables
-boolean backlight_on = true;
+boolean backlight_on = false;
+uint8_t backlightmenu = 1; //this is needed as uint due to the way m2tk's toggles work. 
 
 //Pad resistor - maybe integrate this into channel struct.
 const float pad = 10000;
 
-struct sensor
-{
-	byte pin;
-	uint8_t pad = 10000;
-};
+//Array of sensor pins and associated names
+const byte sensorpins[4] = {AMBIENTPIN, WATER1PIN, WATER2PIN, CASEPIN}
+const char sensornames[4][7] = { "Ambient", "Water 1", "Water 2", "Case   " };
+int temperatures[4]; //declare as int because we need to multiply by 100 to maintain accuracy whilst not using floats too much.
 
+
+
+//struct to describe output channels
 struct channel
 {
-	char name[9];
-
+	char name[9]; // what the name is
+	byte pin; // what the output pin is
+	boolean temp_controlled; //whether we're on temp control
+	byte min_duty_cycle; //minimum allowed duty cycle
+	byte starting_temp; //starting temperature delta
+	byte full_temp; //full speed over and above this
+	byte absolute_max; //full speed at this water temp regardless
+	byte linked_sensor; //which sensor is linked (index to array)
 };
+
+//menu variables to adjust the above struct
+char fan_diag_name[9];
+uint8_t fan_diag_temp_ctrl;
+uint8_t	fan_diag_min_duty;
+uint8_t fan_diag_start_temp;
+uint8_t fan_diag_full_temp;
+uint8_t fan_diag_abs_temp;
+uint8_t fan_diag_linked_sensor;
+
+
+
+
+
+
+
 
 
