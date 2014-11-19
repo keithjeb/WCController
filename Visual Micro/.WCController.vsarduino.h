@@ -40,5 +40,5 @@ typedef unsigned char byte;
 extern "C" void __cxa_pure_virtual() {;}
 #include "c:\Program Files (x86)\Arduino\hardware\arduino\cores\arduino\arduino.h"
 #include "c:\Program Files (x86)\Arduino\hardware\arduino\variants\standard\pins_arduino.h" 
-#include "C:\Users\keith\Documents\Arduino\WCController\WCController\WCController.ino"
+#include "C:\Users\keith\Source\Repos\WCController\WCController.ino"
 #endif
