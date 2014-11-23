@@ -86,6 +86,7 @@ struct channel
 	byte full_temp; //full speed over and above this
 	byte absolute_max; //full speed at this water temp regardless
 	byte linked_sensor; //which sensor is linked (index to array)
+	byte current_cycle;
 };
 
 channel outputs[output_channels];
@@ -340,6 +341,11 @@ void setup() {
 	OCR2A = 100;  // for ease of math. decrease for higher frequencies.
 	pinMode(CHANNEL1PIN, OUTPUT);  // enable the PWM output
 	OCR2B = 100;  // set the PWM duty cycle to 100%
+	TCCR0A = 0x23;
+	TCCR0B = 0x09;  // select clock
+	OCR0A = 100;  // for ease of math. decrease for higher frequencies.
+	pinMode(CHANNEL2PIN, OUTPUT);  // enable the PWM output
+	OCR0B = 100;  // set the PWM duty cycle to 100%
 
 	Serial.begin(9600);
 }
@@ -359,6 +365,7 @@ void loop() {
 
 void worker_backlight(void){
 	if (millis() - BACKLIGHTPOLLSPEED < last_backlight) { return; }
+	last_backlight = millis();
 	if (backlightmenu == 1 && !settings.backlight_on) {
 		!settings.backlight_on = true;
 		lcd.setBacklight(HIGH);
@@ -375,6 +382,7 @@ void worker_monitortemps(void) {
 	if (millis() - settings.temp_delay < last_temp){
 		return;
 	}
+	last_temp = millis();
 	//read in all the temps
 	for (int i = 0; i < 4; i++);
 	{
@@ -387,12 +395,12 @@ void worker_monitortemps(void) {
 		//check for temperature control
 		if (!outputs[i].temp_controlled){
 			//set the duty cycle to min duty cycle then do the next fan
-			writeoutput(output_pins[i], outputs[i].min_duty_cycle);
+			writeoutput(i, outputs[i].min_duty_cycle);
 			continue;
 		}
 		//check if we're over our absolutes, if so write max and then next fan
 		if (temperatures[outputs[i].linked_sensor] > outputs[i].absolute_max * 100) {
-			writeoutput(output_pins[i], 100);
+			writeoutput(i, 100);
 			continue;
 		}
 
@@ -402,19 +410,71 @@ void worker_monitortemps(void) {
 		constrain(delta, 0, 10000);
 		//check if we need to go to 0
 		if (delta <= outputs[i].starting_temp * 100){
-			writeoutput(output_pins[i], 0);
+			writeoutput(i, 0);
 			continue;
 		}
 		//check if we need to go straight to full speed
-		else if (delta = > outputs[i].full_temp * 100) {
-			writeoutput(output_pins[i], 100);
+		else if (delta >= outputs[i].full_temp * 100) {
+			writeoutput(i, 100);
 			continue;
 		}
 		else {
 			//map the current temp to somewhere between minimum cycle and 100% and set it.
-			writeoutput(output_pins[i], map(delta, outputs[i].starting_temp * 100, outputs[i].full_temp * 100, outputs[i].min_duty_cycle, 100));
+			writeoutput(i, map(delta, outputs[i].starting_temp * 100, outputs[i].full_temp * 100, outputs[i].min_duty_cycle, 100));
 			continue;
 		}
+	}
+
+}
+
+void worker_reporting(void) {
+	if (m2.getRoot() != &m2_null_element){ return; }
+	if (millis() - screen_delay < last_screen) {
+		return;
+	}
+	last_screen = millis();
+	char buffer[5];
+	for (byte i = 0; i < 4; i++) {
+		lcd.setCursor(0, i);
+		lcd.print(sensornames[i]);
+		lcd.print(" ");
+		lcd.print(temperatures[i]);
+		lcd.print((byte)0);
+		lcd.print("C");
+		lcd.setCursor(16, i);
+		sprintf(buffer, "%3d%", outputs[i].current_cycle);
+		lcd.print(buffer);
+	}
+	
+
+
+}
+
+
+void writeoutput(byte outputidx, byte pct) {
+	//function takes an output index and a number between 0 and 100 to set the output appropriately.
+	outputs[outputidx].current_cycle = pct;
+	switch output_pins[outputidx]{
+	case 3:
+		if (highspeedouts[outputidx]) {
+			//this means we're adjusting OCR2B between 0 and OCR2A
+			OCR2B = map(pct,0,100,0,OCR2A);
+		}
+		else{
+
+			analogWrite(output_pins[outputidx], map(pct, 0, 100, 0, 255);
+		}
+	case 5:
+		if (highspeedouts[outputidx]) {
+			//this means we're adjusting OCR0B between 0 and OCR0B
+			OCR0B = map(pct,0,100,0,OCR0A);
+		}
+		else{
+			analogWrite(output_pins[outputidx], map(pct, 0, 100, 0, 255);
+		}
+	default:
+		//if we're here we're just doing an analog write because we can't high speed PWM on those pins
+		analogWrite(output_pins[outputidx], map(pct, 0, 100, 0, 255);
 	}
 
 }
