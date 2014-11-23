@@ -38,19 +38,20 @@
 #define D6_pin  6
 #define D7_pin  7
 LiquidCrystal_I2C	lcd(I2C_ADDR, En_pin, Rw_pin, Rs_pin, D4_pin, D5_pin, D6_pin, D7_pin);
+#define output_channels 4
 
 //=================================================
 // Forward declaration of the menu elements
 extern M2tk m2;
 //M2_EXTERN_ALIGN(el_fan_diag);
 //M2_EXTERN_ALIGN(el_cont_diag);
+M2_EXTERN_HLIST(el_wc_menu);
 
 //Some waiting variables for the various loops
 uint8_t temp_delay;
 uint8_t screen_delay;
 uint8_t backlight_delay = 500; //default to polling backlight every 500ms ish
 uint8_t fan_delay;
-
 //some boolean state variables
 boolean backlight_on = false;
 uint8_t backlightmenu = 1; //this is needed as uint due to the way m2tk's toggles work. 
@@ -68,8 +69,6 @@ int temperatures[4]; //declare as int because we need to multiply by 100 to main
 //struct to describe output channels
 struct channel
 {
-	char name[9]; // what the name is
-	byte pin; // what the output pin is
 	boolean temp_controlled; //whether we're on temp control
 	byte min_duty_cycle; //minimum allowed duty cycle
 	byte starting_temp; //starting temperature delta
@@ -78,14 +77,18 @@ struct channel
 	byte linked_sensor; //which sensor is linked (index to array)
 };
 
+channel outputs[output_channels];
+const byte output_pins[output_channels] = { CHANNEL1PIN, CHANNEL2PIN, CHANNEL3PIN, CHANNEL4PIN };
+int output_addresses[output_channels];
+
 //menu variables to adjust the above struct
-char fan_diag_name[9];
 uint8_t fan_diag_temp_ctrl;
 uint8_t	fan_diag_min_duty;
 uint8_t fan_diag_start_temp;
 uint8_t fan_diag_full_temp;
 uint8_t fan_diag_abs_temp;
 uint8_t fan_diag_linked_sensor;
+byte fan_diag_idx;
 
 //setup dialog in two pages (two dialogs really)
 M2_LABEL(el_fan_diag_l1, NULL, "Temp Control");
@@ -94,57 +97,39 @@ M2_LABEL(el_fan_diag_l2, NULL, "Start Delta");
 M2_U8NUM(el_fan_diag_u1, "c2", 0, 99, &fan_diag_start_temp);
 M2_LABEL(el_fan_diag_l3, NULL, "Max Temp");
 M2_U8NUM(el_fan_diag_u2, "c2", 0, 99, &fan_diag_full_temp);
+M2_BUTTON(el_fan_diag1_cancel, "", "Canc", fn_fan_diag_cancel);
+M2_BUTTON(el_fan_diag1_commit, "", "Done", fn_fan_diag_commit);
 //arrange to a c2 gridlist
-M2_LIST(fandiagoptions1) = { &el_fan_diag_l1, &el_fan_diag_t1, &el_fan_diag_l2, &el_fan_diag_u1, &el_fan_diag_l3, &el_fan_diag_u2 };
-M2_GRIDLIST(el_fan_diag_1_labels, "c2", fandiagoptions1);
+M2_LIST(fandiag1) = { &el_fan_diag_l1, &el_fan_diag_t1, &el_fan_diag_l2, &el_fan_diag_u1, &el_fan_diag_l3, &el_fan_diag_u2, &el_fan_diag1_cancel, &el_fan_diag1_commit };
+M2_GRIDLIST(el_fan_diag1, "c2", fandiag1);
+
+
 
 //labels for second page
 M2_LABEL(el_fan_diag_l4, NULL, "Min Duty");
 M2_U8NUM(el_fan_diag_u3, "c3", 0, 100, &fan_diag_min_duty);
-M2_LABEL(el_fan_diag_l5, NULL, "Abs Max Temp");
+M2_LABEL(el_fan_diag_l5, NULL, "Abs Temp");
 M2_U8NUM(el_fan_diag_u4, "c3", 0, 100, &fan_diag_abs_temp);
-M2_LABEL(el_fan_diag_l6, NULL, "Linked Sensor");
+M2_LABEL(el_fan_diag_l6, NULL, "Sensor");
 M2_COMBO(el_fan_diag_c1, NULL, &fan_diag_linked_sensor, 4, fn_idx_to_sensor);
+M2_BUTTON(el_fan_diag2_cancel, "", "Canc", fn_fan_diag_cancel);
+M2_BUTTON(el_fan_diag2_commit, "", "Done", fn_fan_diag_commit);
 //arrange to a c2 gridlist
-M2_LIST(fandiagoptions2) = { &el_fan_diag_l4, &el_fan_diag_u3, &el_fan_diag_l5, &el_fan_diag_u4, &el_fan_diag_l6, &el_fan_diag_c1 };
-M2_GRIDLIST(el_fan_diag_2_labels, "c2", fandiagoptions2);
-
-//buttons for  dialog back/next/cancel/commit
-M2_BUTTON(el_fan_diag_next, "", "Next", fn_fan_diag_next);
-M2_BUTTON(el_fan_diag_back, "", "Prev", fn_fan_diag_back);
-M2_BUTTON(el_fan_diag_cancel, "", "Canc", fn_fan_diag_cancel);
-M2_BUTTON(el_fan_diag_commit, "", "Done", fn_fan_diag_commit);
-//arrange to a 3 column gridlist for page 1
-M2_LIST(page1buttons) = { &el_fan_diag_next, &el_fan_diag_commit, &el_fan_diag_cancel };
-M2_GRIDLIST(el_fan_page_1_btns, "c3", page1buttons);
-
-//and page 2
-M2_LIST(page2buttons) = { &el_fan_diag_back, &el_fan_diag_commit, &el_fan_diag_cancel };
-M2_GRIDLIST(el_fan_page_2_btns, "c3", page2buttons);
-
-//assemble pages
-M2_LIST(page1) = { &el_fan_diag_1_labels, &el_fan_page_1_btns };
-M2_LIST(page2) = { &el_fan_diag_2_labels, &el_fan_page_2_btns };
-M2_ALIGN(el_fan_page1, "W64H64", page1);
-M2_ALIGN(el_fan_page2, "W64H64", page2);
+M2_LIST(fandiagoptions2) = { &el_fan_diag_l4, &el_fan_diag_u3, &el_fan_diag_l5, &el_fan_diag_u4, &el_fan_diag_l6, &el_fan_diag_c1, &el_fan_diag2_cancel, &el_fan_diag2_commit };
+M2_GRIDLIST(el_fan_diag2, "c2", fandiagoptions2);
 
 
-void back_to_menu(m2_el_fnarg_p fnarg) {
-}
 
 const char *fn_idx_to_sensor(uint8_t idx) {
+	return sensornames[idx];
 }
-void fn_fan_diag_next(m2_el_fnarg_p fnarg) {
 
-}
-void fn_fan_diag_back(m2_el_fnarg_p fnarg) {
-
-}
 void fn_fan_diag_cancel(m2_el_fnarg_p fnarg) {
-
+	m2.setRoot(&el_wc_menu);
 }
 void fn_fan_diag_commit(m2_el_fnarg_p fnarg) {
-
+	parsemenu(fan_diag_idx);
+	m2.setRoot(&el_wc_menu);
 }
 //definition of root menu
 m2_xmenu_entry xmenu_data[] =
@@ -152,52 +137,122 @@ m2_xmenu_entry xmenu_data[] =
 	{
 		"Fan Channel 1", NULL, NULL }
 		,		/* expandable main menu entry */
-				{
-				". Settings", NULL, fn_fan1_load_diag }
+		{
+			". Temp Settings", NULL, fn_load_temp_diag }
+			,		/* function opens fan 1 dialog */
+			{
+				". Fan Settings", NULL, fn_load_fan_diag }
 				,		/* function opens fan 1 dialog */
+			{
+				"Fan Channel 2", NULL, NULL }
+				,
+				/* The label of this menu line is returned by the callback procedure */
 				{
-					"Fan Channel 2", NULL, NULL }
-					,
-						/* The label of this menu line is returned by the callback procedure */
+					". Temp Settings", NULL, fn_load_temp_diag }
+					,		/* function opens fan 1 dialog */
+					{
+						". Fan Settings", NULL, fn_load_fan_diag }
+						,		/* function opens fan 1 dialog */
 						{
-							". Settings", NULL, fn_fan2_load_diag }
-							,		/* function opens fan 1 dialog */
+							"Fan Channel 3", NULL, NULL }
+							,
+							/* The label of this menu line is returned by the callback procedure */
 							{
-								"Controller", NULL, fn_cont_load_diag } // goes straight to controller dialo
-								,
+								". Temp Settings", NULL, fn_load_temp_diag }
+								,		/* function opens fan 1 dialog */
 								{
-									"Hide Menu", NULL, fn_menu_hide }
-									,      //function hides the menus.
+									". Fan Settings", NULL, fn_load_fan_diag }
+									,
 									{
-										NULL, NULL, NULL }
+										"Fan Channel 4", NULL, NULL }
 										,
+										/* The label of this menu line is returned by the callback procedure */
+										{
+											". Temp Settings", NULL, fn_load_temp_diag }
+											,		/* function opens fan 1 dialog */
+											{
+												". Fan Settings", NULL, fn_load_fan_diag }
+												,
+					{
+						"Controller", NULL, fn_load_cont_diag } // goes straight to controller dialo
+						,
+						{
+							"Hide Menu", NULL, fn_menu_hide }
+							,      //function hides the menus.
+							{
+								NULL, NULL, NULL }
+								,
 };
 uint8_t el_x2l_first = 0;
-uint8_t el_x2l_cnt = 3;
-const char *fn_fan1_load_diag(uint8_t idx, uint8_t msg) {
+uint8_t el_x2l_cnt = 14;
+const char *fn_load_temp_diag(uint8_t idx, uint8_t msg) {
+	byte channel;
 	if (msg == M2_STRLIST_MSG_SELECT) {
-		m2.setRoot(&el_fan_page1);
+		//use idx to determine which fan we're operating on.
+		channel = idx / 3;
+		//set the working variable
+		fan_diag_idx = channel;
+		loadtomenu(channel);
+		Serial.println(channel);
+		m2.setRoot(&el_fan_diag1);
 		lcd.clear();
 	}
 
 	return "";
 }
-const char *fn_fan2_load_diag(uint8_t idx, uint8_t msg) {
+const char *fn_load_fan_diag(uint8_t idx, uint8_t msg) {
+	byte channel;
 	if (msg == M2_STRLIST_MSG_SELECT) {
-		m2.setRoot(&el_fan_page2);
+		Serial.println(idx);
+		channel = idx / 3;
+		//set the working variable
+		fan_diag_idx = channel;
+		//helper to load variables into input variables.
+		loadtomenu(channel);
+		Serial.println(channel);
+		m2.setRoot(&el_fan_diag2);
 		lcd.clear();
 	}
 	return "";
 }
 //load the controller settings diag
-const char *fn_cont_load_diag(uint8_t idx, uint8_t msg) {
+const char *fn_load_cont_diag(uint8_t idx, uint8_t msg) {
 	if (msg == M2_STRLIST_MSG_SELECT) {
 		//m2.setRoot(&el_cont_diag);
-		lcd.clear();
+		lcd.clear();	
+		Serial.println(idx);
 	}
 
 	return "";
 }
+void loadtomenu(byte chan){
+	if (outputs[chan].temp_controlled){ 
+		fan_diag_temp_ctrl = 1;
+	}
+	else { fan_diag_temp_ctrl = 0;
+	}
+	fan_diag_abs_temp = (uint8_t)outputs[chan].absolute_max;
+	fan_diag_full_temp = (uint8_t)outputs[chan].full_temp;
+	fan_diag_linked_sensor = (uint8_t)outputs[chan].linked_sensor;
+	fan_diag_min_duty = (uint8_t)outputs[chan].min_duty_cycle;
+	fan_diag_start_temp = (uint8_t)outputs[chan].starting_temp;
+}
+
+void parsemenu(byte chan){
+	if (fan_diag_temp_ctrl = 1){
+		outputs[chan].temp_controlled = true;
+	}
+	else {
+		outputs[chan].temp_controlled = false;
+	}
+	outputs[chan].absolute_max = fan_diag_abs_temp;
+	outputs[chan].full_temp = fan_diag_full_temp;
+	outputs[chan].linked_sensor = fan_diag_linked_sensor;
+	outputs[chan].min_duty_cycle = fan_diag_min_duty;
+	outputs[chan].starting_temp = fan_diag_start_temp;
+	updatechannel(chan);
+}
+
 const char *fn_menu_hide(uint8_t idx, uint8_t msg) {
 	if (msg == M2_STRLIST_MSG_SELECT) {
 		m2.setRoot(&m2_null_element);
@@ -214,8 +269,24 @@ M2_HLIST(el_wc_menu, NULL, list_x2l);
 // m2 object and constructor
 // Note: Use the "m2_eh_4bd" handler, which fits better to the "m2_es_arduino_rotary_encoder" 
 
-M2tk m2(&el_fan_page1, m2_es_arduino_rotary_encoder, m2_eh_4bd, m2_gh_nlc);
+M2tk m2(&el_wc_menu, m2_es_arduino_rotary_encoder, m2_eh_4bd, m2_gh_nlc);
 
+//function to set the EEPROM locations
+void readaddresses(){
+	
+	for (byte i = 0; i < output_channels - 1; i++){
+		output_addresses[i] = EEPROM.getAddress(sizeof(outputs[i]));
+	}
+}
+void loadchannels(){
+	for (byte i = 0; i < output_channels - 1; i++){
+		EEPROM.readBlock(output_addresses[i], outputs[i]);
+		
+	}
+}
+void updatechannel(byte idx){
+	EEPROM.updateBlock(output_addresses[idx], outputs[idx]);
+}
 void setup() {
 	m2_SetNewLiquidCrystal(&lcd, 20, 4);
 
@@ -227,19 +298,22 @@ void setup() {
 	m2.setPin(M2_KEY_ROT_ENC_B, CLKPIN); //CLK
 	//set the backlight pin, but let the backlight worker update it.
 	lcd.setBacklightPin(BACKLIGHT_PIN, POSITIVE);
-//	lcd.createChar(0, degree);
-	//Serial.begin(9600);
+	//	lcd.createChar(0, degree);
+	Serial.begin(9600);
 	//begin code to change PWM frequency on Timer 2 HT bens @ arduino forums.
 	TCCR2A = 0x23;
 	TCCR2B = 0x09;  // select clock
 	OCR2A = 79;  // aiming for 25kHz
 	pinMode(CHANNEL1PIN, OUTPUT);  // enable the PWM output (you now have a PWM signal on digital pin 3)
 	OCR2B = 79;  // set the PWM duty cycle to 100%
+	EEPROM.setMemPool(0, EEPROMSizeUno);
+	readaddresses();
+	loadchannels();
 }
 
 void loop() {
 	//split the workers off into separate functions for ease of reading and sensibleness.
-//	worker_monitortemps();
+	//	worker_monitortemps();
 	//  worker_debug();
 	//worker_reporting();
 	//worker_backlight();
