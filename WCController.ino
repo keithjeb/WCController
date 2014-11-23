@@ -59,8 +59,8 @@ uint8_t backlightmenu = 1; //this is needed as uint due to the way m2tk's toggle
 const float pad = 10000;
 
 //Array of sensor pins and associated names
-const byte sensorpins[4] = {AMBIENTPIN, WATER1PIN, WATER2PIN, CASEPIN}
-const char sensornames[4][7] = { "Ambient", "Water 1", "Water 2", "Case   " };
+const byte sensorpins[4] = { AMBIENTPIN, WATER1PIN, WATER2PIN, CASEPIN };
+const char sensornames[4][8] = { "Ambient", "Water 1", "Water 2", "Case  " };
 int temperatures[4]; //declare as int because we need to multiply by 100 to maintain accuracy whilst not using floats too much.
 
 
@@ -87,28 +87,46 @@ uint8_t fan_diag_full_temp;
 uint8_t fan_diag_abs_temp;
 uint8_t fan_diag_linked_sensor;
 
-
-//setup dialog
+//setup dialog in two pages (two dialogs really)
 M2_LABEL(el_fan_diag_l1, NULL, "Temp Control");
 M2_TOGGLE(el_fan_diag_t1, "", &fan_diag_temp_ctrl);
 M2_LABEL(el_fan_diag_l2, NULL, "Start Delta");
 M2_U8NUM(el_fan_diag_u1, "c2", 0, 99, &fan_diag_start_temp);
 M2_LABEL(el_fan_diag_l3, NULL, "Max Temp");
 M2_U8NUM(el_fan_diag_u2, "c2", 0, 99, &fan_diag_full_temp);
+//arrange to a c2 gridlist
+M2_LIST(fandiagoptions1) = { &el_fan_diag_l1, &el_fan_diag_t1, &el_fan_diag_l2, &el_fan_diag_u1, &el_fan_diag_l3, &el_fan_diag_u2 };
+M2_GRIDLIST(el_fan_diag_1_labels, "c2", fandiagoptions1);
+
+//labels for second page
 M2_LABEL(el_fan_diag_l4, NULL, "Min Duty");
 M2_U8NUM(el_fan_diag_u3, "c3", 0, 100, &fan_diag_min_duty);
 M2_LABEL(el_fan_diag_l5, NULL, "Abs Max Temp");
 M2_U8NUM(el_fan_diag_u4, "c3", 0, 100, &fan_diag_abs_temp);
 M2_LABEL(el_fan_diag_l6, NULL, "Linked Sensor");
 M2_COMBO(el_fan_diag_c1, NULL, &fan_diag_linked_sensor, 4, fn_idx_to_sensor);
-M2_BUTTON(el_fan_diag_btn, "", "Back", back_to_menu);
-M2_LIST(fandiaglist1) = {
-	&el_fan_diag_l1, &el_fan_diag_t1, &el_fan_diag_l2, &el_fan_diag_u1, &el_fan_diag_l3, &el_fan_diag_u2, &el_fan_diag_l4, &el_fan_diag_u3, &el_fan_diag_l5, &el_fan_diag_u4, &el_fan_diag_l6,&el_fan_diag_c1, &el_fan_diag_btn);
+//arrange to a c2 gridlist
+M2_LIST(fandiagoptions2) = { &el_fan_diag_l4, &el_fan_diag_u3, &el_fan_diag_l5, &el_fan_diag_u4, &el_fan_diag_l6, &el_fan_diag_c1 };
+M2_GRIDLIST(el_fan_diag_2_labels, "c2", fandiagoptions2);
 
-M2_GRIDLIST(el_fan_diag_grid, "c2", fandiaglist);
-M2_VSB(el_fan_diag_vsb, "w16h4l4", 0, 7);
-M2_LIST(fandiaglist2) = { el_fan_diag_grid, el_fan_diag_vsb);
-M2_HLIST(el_fan_diag, "", &elfandiaglist2);
+//buttons for  dialog back/next/cancel/commit
+M2_BUTTON(el_fan_diag_next, "" , "Next", fn_fan_diag_next);
+M2_BUTTON(el_fan_diag_back, "", "Prev", fn_fan_diag_back);
+M2_BUTTON(el_fan_diag_cancel,"" , "Canc", fn_fan_diag_cancel);
+M2_BUTTON(el_fan_diag_commit,"" , "Done", fn_fan_diag_commit);
+//arrange to a 3 column gridlist for page 1
+M2_LIST(page1buttons) = { &el_fan_diag_next, &el_fan_diag_commit, &el_fan_diag_cancel };
+M2_GRIDLIST(el_fan_page_1_btns, "c3", page1buttons);
+
+//and page 2
+M2_LIST(page2buttons) = { &el_fan_diag_back, &el_fan_diag_commit, &el_fan_diag_cancel };
+M2_GRIDLIST(el_fan_page_2_btns, "c3", page2buttons);
+
+//assemble pages
+M2_LIST(page1) = { &el_fan_diag_1_labels, &el_fan_page_1_btns };
+M2_LIST(page2) = { &el_fan_diag_2_labels, &el_fan_page_2_btns };
+M2_ALIGN(el_fan_page1, "W64H64", page1);
+M2_ALIGN(el_fan_page2, "W64H64", page2);
 
 
 void back_to_menu(m2_el_fnarg_p fnarg) {
@@ -116,6 +134,19 @@ void back_to_menu(m2_el_fnarg_p fnarg) {
 
 const char *fn_idx_to_sensor(uint8_t idx) {
 }
+void fn_fan_diag_next(m2_el_fnarg_p fnarg) {
+	
+}
+void fn_fan_diag_back(m2_el_fnarg_p fnarg) {
+	
+}
+void fn_fan_diag_cancel(m2_el_fnarg_p fnarg) {
+	
+}
+void fn_fan_diag_commit(m2_el_fnarg_p fnarg) {
+	
+}
+M2tk m2(&el_fan_page1, m2_es_arduino_rotary_encoder, m2_eh_4bd, m2_gh_nlc);
 
 void setup() {
 	m2_SetNewLiquidCrystal(&lcd, 20, 4);
@@ -127,8 +158,11 @@ void setup() {
 	m2.setPin(M2_KEY_ROT_ENC_B, CLKPIN); //CLK
 	//set the backlight pin, but let the backlight worker update it.
 	lcd.setBacklightPin(BACKLIGHT_PIN, POSITIVE);
+	Serial.begin(9600);
+	Serial.print("Finished Setup");
 }
 void loop() {
+	Serial.print("start loop");
 	m2.checkKey();
 	if (m2.handleKey()) {
 		m2.draw();
