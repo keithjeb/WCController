@@ -1,7 +1,9 @@
-//Code for Menu Based water cooling control system. Provides for 2 channels of High speed (25khz) PWM output & 2 Channels low speed (c.600hz) PWM output.
+//Code for Menu Based water cooling control system. Provides for 2 channels of High speed (25khz) PWM output & 2 Channels low speed (490 hz) PWM output.
 //either should funtion for fan PWM control. Only channels 1 & 2 are suitable for control of MOSFETs (IRL510N tested) for voltage control (lower voltage outputs will work but sing).
 //
 //Includes
+#include <EEPROMVar.h>
+#include <EEPROMex.h>
 #include <Wire.h> 
 #include <LiquidCrystal_I2C.h>
 #include "M2tk.h"
@@ -9,13 +11,14 @@
 #include "utility/m2ghnlc.h"
 
 //Analog Pins for Thermistor Connections
-#define WATER1PIN 2
-#define WATER2PIN 1
 #define AMBIENTPIN 0
-#define CASEPIN 4
+#define WATER1PIN 1
+#define WATER2PIN 2
+#define CASEPIN 3
 
 //PWM Pins for Channel 3 & 4 (1 and 2 will always be pin 3 (channel 1) and pin 5 (channel 2) as they're tied to timer 2
 #define CHANNEL1PIN 3
+#define CHANNEL2PIN 5
 #define CHANNEL3PIN 5
 #define CHANNEL4PIN 6
 //PINS for Rotary encoder
@@ -36,222 +39,126 @@
 #define D7_pin  7
 LiquidCrystal_I2C	lcd(I2C_ADDR, En_pin, Rw_pin, Rs_pin, D4_pin, D5_pin, D6_pin, D7_pin);
 
-//declare variables
-//Polling Frequency
-uint8_t update_delay = 5000;
-//screen update delay on home screen (in ms) - only applies when on monitoring screen.
-uint8_t screen_refresh = 1000;
-//storage values for graphics/worker routines to avoid delays.
-unsigned long last_through_graphics;
-unsigned long last_through_worker;
-unsigned long last_through_backlight;
-//voltage of pad resistor - better accuraccy if done per channel. 
-float pad = 10000;
-//variable for toggle menu (it can't understand bool)
-uint8_t backlightOn = 1;
-//set this flag so we're not doing extra work
-boolean boolbackon = false;
-//fan parameters
-boolean fan1full = false;
-boolean fan2full = false;
-uint8_t fan1starttemp = 2; //temp delta between ambient & water 1 where fan 1 starts to spin
-uint8_t fan1minduty = 15; //min duty cycle for fan channel 1
-uint8_t fan1maxtemp = 5; //we'll be at 100% duty by this delta
-uint8_t fan1current; //store current duty cycle since we'll probably need it.
-uint8_t fan2starttemp = 5;
-uint8_t fan2minduty = 15;
-uint8_t fan2maxtemp = 15;
-uint8_t fan2current;
-uint8_t fan3starttemp;
-uint8_t fan3minduty;
-uint8_t fan3maxtemp;
-uint8_t fan3current;
-float water1temp;
-float water2temp;
-float ambienttemp;
-float casetemp;
-
 //=================================================
 // Forward declaration of the menu elements
 extern M2tk m2;
-M2_EXTERN_ALIGN(el_f1_diag);
-M2_EXTERN_ALIGN(el_f2_diag);
-M2_EXTERN_ALIGN(el_cont_diag);
-M2_EXTERN_HLIST(el_wc_menu);
+//M2_EXTERN_ALIGN(el_fan_diag);
+//M2_EXTERN_ALIGN(el_cont_diag);
+
+//Some waiting variables for the various loops
+uint8_t temp_delay;
+uint8_t screen_delay;
+uint8_t backlight_delay = 500; //default to polling backlight every 500ms ish
+uint8_t fan_delay;
+
+//some boolean state variables
+boolean backlight_on = false;
+uint8_t backlightmenu = 1; //this is needed as uint due to the way m2tk's toggles work. 
+
+//Pad resistor - maybe integrate this into channel struct.
+const float pad = 10000;
+
+//Array of sensor pins and associated names
+const byte sensorpins[4] = { AMBIENTPIN, WATER1PIN, WATER2PIN, CASEPIN };
+const char sensornames[4][8] = { "Ambient", "Water 1", "Water 2", "Case  " };
+int temperatures[4]; //declare as int because we need to multiply by 100 to maintain accuracy whilst not using floats too much.
 
 
-//callbacks for the menus go here:
 
-//Called from hide menu option - set the root to null (i.e. release control of screen)
-const char *fn_menu_hide(uint8_t idx, uint8_t msg) {
-	if (msg == M2_STRLIST_MSG_SELECT) {
-		m2.setRoot(&m2_null_element);
-		lcd.clear();
-	}
-	return "";
-}
-char buf[20];
-//return the value for the channel 1 toggle
-const char *fn_fan1_temp_value(uint8_t idx, uint8_t msg)
+//struct to describe output channels
+struct channel
 {
-	if (msg == M2_STRLIST_MSG_GET_STR) {
-		if (fan1full) {
-			strcpy(buf, " Temp Ctrl Off ");
-			return buf;
-		}
-		else {
-			strcpy(buf, " Temp Ctrl On ");
-			return buf;
-		}
-	}
-	//if we were picked toggle it.
-	if (msg == M2_STRLIST_MSG_SELECT) {
-		if (fan1full) {
-			fan1full = false;
-		}
-		else {
-			fan1full = true;
-		}
+	char name[9]; // what the name is
+	byte pin; // what the output pin is
+	boolean temp_controlled; //whether we're on temp control
+	byte min_duty_cycle; //minimum allowed duty cycle
+	byte starting_temp; //starting temperature delta
+	byte full_temp; //full speed over and above this
+	byte absolute_max; //full speed at this water temp regardless
+	byte linked_sensor; //which sensor is linked (index to array)
+};
 
-	}
-	return "";
-}
-//Skip to the Fan 1 Input Dialog
-const char *fn_fan1_load_diag(uint8_t idx, uint8_t msg) {
-	if (msg == M2_STRLIST_MSG_SELECT) {
-		m2.setRoot(&el_f1_diag);
-		lcd.clear();
-	}
+//menu variables to adjust the above struct
+char fan_diag_name[9];
+uint8_t fan_diag_temp_ctrl;
+uint8_t	fan_diag_min_duty;
+uint8_t fan_diag_start_temp;
+uint8_t fan_diag_full_temp;
+uint8_t fan_diag_abs_temp;
+uint8_t fan_diag_linked_sensor;
 
-	return "";
-}
-//return the value for the channel 2 toggle
-const char *fn_fan2_temp_value(uint8_t idx, uint8_t msg)
-{
-	if (msg == M2_STRLIST_MSG_GET_STR) {
-		if (fan2full) {
-			strcpy(buf, " Temp Ctrl Off ");
-			return buf;
-		}
-		else {
-			strcpy(buf, " Temp Ctrl On ");
-			return buf;
-		}
-	}
-	//if we were picked toggle it.
-	if (msg == M2_STRLIST_MSG_SELECT) {
-		if (fan2full) {
-			fan2full = false;
-		}
-		else {
-			fan2full = true;
-		}
+//setup dialog in two pages (two dialogs really)
+M2_LABEL(el_fan_diag_l1, NULL, "Temp Control");
+M2_TOGGLE(el_fan_diag_t1, "", &fan_diag_temp_ctrl);
+M2_LABEL(el_fan_diag_l2, NULL, "Start Delta");
+M2_U8NUM(el_fan_diag_u1, "c2", 0, 99, &fan_diag_start_temp);
+M2_LABEL(el_fan_diag_l3, NULL, "Max Temp");
+M2_U8NUM(el_fan_diag_u2, "c2", 0, 99, &fan_diag_full_temp);
+//arrange to a c2 gridlist
+M2_LIST(fandiagoptions1) = { &el_fan_diag_l1, &el_fan_diag_t1, &el_fan_diag_l2, &el_fan_diag_u1, &el_fan_diag_l3, &el_fan_diag_u2 };
+M2_GRIDLIST(el_fan_diag_1_labels, "c2", fandiagoptions1);
 
-	}
-	return "";
-}
-//Skip to the Fan 2 Input Dialog
-const char *fn_fan2_load_diag(uint8_t idx, uint8_t msg) {
-	if (msg == M2_STRLIST_MSG_SELECT) {
-		m2.setRoot(&el_f2_diag);
-		lcd.clear();
-	}
-	return "";
-}
+//labels for second page
+M2_LABEL(el_fan_diag_l4, NULL, "Min Duty");
+M2_U8NUM(el_fan_diag_u3, "c3", 0, 100, &fan_diag_min_duty);
+M2_LABEL(el_fan_diag_l5, NULL, "Abs Max Temp");
+M2_U8NUM(el_fan_diag_u4, "c3", 0, 100, &fan_diag_abs_temp);
+M2_LABEL(el_fan_diag_l6, NULL, "Linked Sensor");
+M2_COMBO(el_fan_diag_c1, NULL, &fan_diag_linked_sensor, 4, fn_idx_to_sensor);
+//arrange to a c2 gridlist
+M2_LIST(fandiagoptions2) = { &el_fan_diag_l4, &el_fan_diag_u3, &el_fan_diag_l5, &el_fan_diag_u4, &el_fan_diag_l6, &el_fan_diag_c1 };
+M2_GRIDLIST(el_fan_diag_2_labels, "c2", fandiagoptions2);
 
-//Function to return back to main menu from dialogs.
+//buttons for  dialog back/next/cancel/commit
+M2_BUTTON(el_fan_diag_next, "", "Next", fn_fan_diag_next);
+M2_BUTTON(el_fan_diag_back, "", "Prev", fn_fan_diag_back);
+M2_BUTTON(el_fan_diag_cancel, "", "Canc", fn_fan_diag_cancel);
+M2_BUTTON(el_fan_diag_commit, "", "Done", fn_fan_diag_commit);
+//arrange to a 3 column gridlist for page 1
+M2_LIST(page1buttons) = { &el_fan_diag_next, &el_fan_diag_commit, &el_fan_diag_cancel };
+M2_GRIDLIST(el_fan_page_1_btns, "c3", page1buttons);
+
+//and page 2
+M2_LIST(page2buttons) = { &el_fan_diag_back, &el_fan_diag_commit, &el_fan_diag_cancel };
+M2_GRIDLIST(el_fan_page_2_btns, "c3", page2buttons);
+
+//assemble pages
+M2_LIST(page1) = { &el_fan_diag_1_labels, &el_fan_page_1_btns };
+M2_LIST(page2) = { &el_fan_diag_2_labels, &el_fan_page_2_btns };
+M2_ALIGN(el_fan_page1, "W64H64", page1);
+M2_ALIGN(el_fan_page2, "W64H64", page2);
+
+
 void back_to_menu(m2_el_fnarg_p fnarg) {
-	lcd.clear();
-	m2.setRoot(&el_wc_menu);
 }
-//load the controller settings diag
-const char *fn_cont_load_diag(uint8_t idx, uint8_t msg) {
-	if (msg == M2_STRLIST_MSG_SELECT) {
-		m2.setRoot(&el_cont_diag);
-		lcd.clear();
-	}
 
-	return "";
+const char *fn_idx_to_sensor(uint8_t idx) {
 }
-//dialog for Fan 1 Temp Settings
-M2_LABEL(el_f1_l1, NULL, "Start Delta");
-M2_U8NUM(el_f1_u1, "c2", 0, 99, &fan1starttemp);
-M2_LABEL(el_f1_l2, NULL, "Max Delta");
-M2_U8NUM(el_f1_u2, "c2", 0, 99, &fan1maxtemp);
-M2_LABEL(el_f1_l3, NULL, "Min Duty");
-M2_U8NUM(el_f1_u3, "c2", 0, 99, &fan1minduty);
-M2_BUTTON(el_f1_btn, "", "Back", back_to_menu);
-M2_LIST(f1diaglist) = {
-	&el_f1_l1, &el_f1_u1, &el_f1_l2, &el_f1_u2, &el_f1_l3, &el_f1_u3, &el_f1_btn };
-M2_GRIDLIST(el_f1_grid, "c2", f1diaglist);
-M2_ALIGN(el_f1_diag, "-1|1W64H64", &el_f1_grid);
+void fn_fan_diag_next(m2_el_fnarg_p fnarg) {
 
-//dialog for Fan 2 Temp Settings
-M2_LABEL(el_f2_l1, NULL, "Start Delta");
-M2_U8NUM(el_f2_u1, "c2", 0, 99, &fan2starttemp);
-M2_LABEL(el_f2_l2, NULL, "Max Delta");
-M2_U8NUM(el_f2_u2, "c2", 0, 99, &fan2maxtemp);
-M2_LABEL(el_f2_l3, NULL, "Min Duty");
-M2_U8NUM(el_f2_u3, "c2", 0, 99, &fan2minduty);
-M2_BUTTON(el_f2_btn, "", "Back", back_to_menu);
-M2_LIST(f2diaglist) = {
-	&el_f2_l1, &el_f2_u1, &el_f2_l2, &el_f2_u2, &el_f2_l3, &el_f2_u3, &el_f2_btn };
-M2_GRIDLIST(el_f2_grid, "c2", f2diaglist);
-M2_ALIGN(el_f2_diag, "-1|1W64H64", &el_f2_grid);
+}
+void fn_fan_diag_back(m2_el_fnarg_p fnarg) {
 
-////dialog for Fan 3 Temp Settings
-//M2_LABEL(el_f3_l1, NULL, "Start Delta");
-//M2_U8NUM(el_f3_u1, "c2", 0, 99, &fan3starttemp);
-//M2_LABEL(el_f3_l2, NULL, "Max Delta");
-//M2_U8NUM(el_f3_u2,"c2", 0, 99,&fan3maxtemp);
-//M2_LABEL(el_f3_l3, NULL, "Min Duty");
-//M2_U8NUM(el_f3_u3,"c2", 0, 99,&fan3minduty);
-//M2_BUTTON(el_f3_btn, "", "Back", back_to_menu);
-//M2_LIST(f3diaglist) = { 
-//  &el_f3_l1, &el_f3_u1, &el_f3_l2,&el_f3_u2, &el_f3_l3,&el_f3_u3,&el_f3_btn};
-//M2_GRIDLIST(el_f3_grid, "c2", f3diaglist);
-//M2_ALIGN(el_f3_diag, "-1|1W64H64", &el_f3_grid);
-////dialog for Fan 4 Temp Settings
-//M2_LABEL(el_f4_l1, NULL, "Start Delta");
-//M2_U8NUM(el_f4_u1, "c2", 0, 99, &fan4starttemp);
-//M2_LABEL(el_f4_l2, NULL, "Max Delta");
-//M2_U8NUM(el_f4_u2,"c2", 0, 99,&fan4maxtemp);
-//M2_LABEL(el_f4_l3, NULL, "Min Duty");
-//M2_U8NUM(el_f4_u3,"c2", 0, 99,&fan4minduty);
-//M2_BUTTON(el_f4_btn, "", "Back", back_to_menu);
-//M2_LIST(f4diaglist) = { 
-//  &el_f4_l1, &el_f4_u1, &el_f4_l2,&el_f4_u2, &el_f4_l3,&el_f4_u3,&el_f4_btn};
-//M2_GRIDLIST(el_f4_grid, "c2", f4diaglist);
-//M2_ALIGN(el_f4_diag, "-1|1W64H64", &el_f4_grid);
-//Dialog for Controller Settings
-M2_LABEL(el_cont_l1, NULL, "Backlight: ");
-M2_TOGGLE(el_cont_t1, "c2", &backlightOn);
-M2_LABEL(el_cont_l2, NULL, "Update Speed ");
-M2_U8NUM(el_cont_u2, "c2", 0, 99, &update_delay);
-M2_BUTTON(el_cont_btn, "", "Back", back_to_menu);
-M2_LIST(contdiaglist) = {
-	&el_cont_l1, &el_cont_t1, &el_cont_l2, &el_cont_u2, &el_cont_btn };
-M2_GRIDLIST(el_cont_grid, "c2", contdiaglist);
-M2_ALIGN(el_cont_diag, "-1|1W64H64", &el_cont_grid);
+}
+void fn_fan_diag_cancel(m2_el_fnarg_p fnarg) {
 
+}
+void fn_fan_diag_commit(m2_el_fnarg_p fnarg) {
+
+}
 //definition of root menu
 m2_xmenu_entry xmenu_data[] =
 {
 	{
 		"Fan Channel 1", NULL, NULL }
 		,		/* expandable main menu entry */
-		{
-			".", NULL, fn_fan1_temp_value }
-			,		/* The label of this menu line is returned by the callback procedure */
-			{
+				{
 				". Settings", NULL, fn_fan1_load_diag }
 				,		/* function opens fan 1 dialog */
 				{
 					"Fan Channel 2", NULL, NULL }
 					,
-					{
-						". Temp Ctrl", NULL, fn_fan2_temp_value }
-						,		/* The label of this menu line is returned by the callback procedure */
+						/* The label of this menu line is returned by the callback procedure */
 						{
 							". Settings", NULL, fn_fan2_load_diag }
 							,		/* function opens fan 1 dialog */
@@ -267,6 +174,37 @@ m2_xmenu_entry xmenu_data[] =
 };
 uint8_t el_x2l_first = 0;
 uint8_t el_x2l_cnt = 3;
+const char *fn_fan1_load_diag(uint8_t idx, uint8_t msg) {
+	if (msg == M2_STRLIST_MSG_SELECT) {
+		m2.setRoot(&el_fan_page1);
+		lcd.clear();
+	}
+
+	return "";
+}
+const char *fn_fan2_load_diag(uint8_t idx, uint8_t msg) {
+	if (msg == M2_STRLIST_MSG_SELECT) {
+		m2.setRoot(&el_fan_page2);
+		lcd.clear();
+	}
+	return "";
+}
+//load the controller settings diag
+const char *fn_cont_load_diag(uint8_t idx, uint8_t msg) {
+	if (msg == M2_STRLIST_MSG_SELECT) {
+		//m2.setRoot(&el_cont_diag);
+		lcd.clear();
+	}
+
+	return "";
+}
+const char *fn_menu_hide(uint8_t idx, uint8_t msg) {
+	if (msg == M2_STRLIST_MSG_SELECT) {
+		m2.setRoot(&m2_null_element);
+		lcd.clear();
+	}
+	return "";
+}
 
 M2_X2LMENU(el_x2l_main, "l4e1w14", &el_x2l_first, &el_x2l_cnt, xmenu_data, '+', '-', '\0');
 M2_VSB(el_x2l_vsb, "l5W1r1", &el_x2l_first, &el_x2l_cnt);
@@ -276,20 +214,7 @@ M2_HLIST(el_wc_menu, NULL, list_x2l);
 // m2 object and constructor
 // Note: Use the "m2_eh_4bd" handler, which fits better to the "m2_es_arduino_rotary_encoder" 
 
-M2tk m2(&m2_null_element, m2_es_arduino_rotary_encoder, m2_eh_4bd, m2_gh_nlc);
-
-
-//define a degree sign
-byte degree[8] = {
-	0b00111,
-	0b00101,
-	0b00111,
-	0b00000,
-	0b00000,
-	0b00000,
-	0b00000,
-	0b00000
-};
+M2tk m2(&el_fan_page1, m2_es_arduino_rotary_encoder, m2_eh_4bd, m2_gh_nlc);
 
 void setup() {
 	m2_SetNewLiquidCrystal(&lcd, 20, 4);
@@ -302,7 +227,7 @@ void setup() {
 	m2.setPin(M2_KEY_ROT_ENC_B, CLKPIN); //CLK
 	//set the backlight pin, but let the backlight worker update it.
 	lcd.setBacklightPin(BACKLIGHT_PIN, POSITIVE);
-	lcd.createChar(0, degree);
+//	lcd.createChar(0, degree);
 	//Serial.begin(9600);
 	//begin code to change PWM frequency on Timer 2 HT bens @ arduino forums.
 	TCCR2A = 0x23;
@@ -314,144 +239,13 @@ void setup() {
 
 void loop() {
 	//split the workers off into separate functions for ease of reading and sensibleness.
-	worker_monitortemps();
+//	worker_monitortemps();
 	//  worker_debug();
-	worker_reporting();
-	worker_backlight();
+	//worker_reporting();
+	//worker_backlight();
 	m2.checkKey();
 	if (m2.handleKey()) {
 		m2.draw();
 	}
 
 }
-void worker_backlight(void){
-	if (millis() < last_through_backlight + 500) { return; }
-	if (backlightOn == 1 && !boolbackon) {
-		boolbackon = true;
-		lcd.setBacklight(HIGH);
-	}
-	else if (backlightOn == 0 && boolbackon){
-		boolbackon = false;
-		lcd.setBacklight(LOW);
-	}
-	return;
-}
-void worker_reporting(void) {
-	char padder[4];
-	// show the graphics depending on the current toplevel element and how soon we're back. defaults should update c. every 1s.
-	if (m2.getRoot() == &m2_null_element && millis() > last_through_graphics + screen_refresh) {
-		last_through_graphics = millis();
-		lcd.setCursor(0, 0);
-		lcd.print("Water 1: ");
-		lcd.print(water1temp, 1);
-		lcd.write((byte)0);
-		lcd.print("C ");
-		lcd.setCursor(0, 1);
-		lcd.print("Water 2: ");
-		lcd.print(water2temp, 1);
-		lcd.write((byte)0);
-		lcd.print("C ");
-		lcd.setCursor(0, 2);
-		lcd.print("Case   : ");
-		lcd.print(casetemp, 1);
-		lcd.write((byte)0);
-		lcd.print("C");
-		lcd.setCursor(0, 3);
-		lcd.print("Ambient: ");
-		lcd.print(ambienttemp, 1);
-		lcd.write((byte)0);
-		lcd.print("C");
-		lcd.setCursor(16, 0);
-		lcd.print(fan1current);
-		lcd.print("%");
-		lcd.setCursor(16, 1);
-		lcd.print(fan2current);
-		lcd.print("%");
-		lcd.setCursor(16, 2);
-		lcd.print(fan2current);
-		lcd.print("%");
-
-		if (m2.getKey() != M2_KEY_NONE)
-			m2.setRoot(&el_wc_menu);
-	}
-	return;
-}
-
-int scrap;
-int water1delta;
-int water2delta;
-int casedelta;
-
-void worker_monitortemps(void) {
-	//return if we are too quick through the rest - defaults give us a 0.2s polling rate
-	if (millis() < last_through_worker + update_delay * 10){
-		return;
-	}
-	//read in all the temps
-	water1temp = Thermistor(analogRead(WATER1PIN));
-	water2temp = Thermistor(analogRead(WATER2PIN));
-	ambienttemp = Thermistor(analogRead(AMBIENTPIN));
-	casetemp = 90;//Thermistor(analogRead(AMBIENTPIN));
-	//now do some work on them compare delta
-	water1delta = (int)(100 * water1temp - 100 * ambienttemp);
-	water2delta = (int)(100 * water2temp - 100 * ambienttemp);
-	casedelta = (int)(100 * casetemp - 100 * ambienttemp);
-	fan1current = fan_speed_calc(water1delta, 100 * fan1starttemp, 100 * fan1maxtemp, fan1minduty);
-	fan2current = fan_speed_calc(water2delta, 100 * fan2starttemp, 100 * fan2maxtemp, fan2minduty);
-	fan3current = fan_speed_calc(casedelta, 100 * fan3starttemp, 100 * fan3maxtemp, fan3minduty);
-	//control channel 1 fan speed
-	OCR2A = 79 * fan1current / 0.1;
-}
-void worker_debug(void) {
-	lcd.setCursor(0, 0);
-	lcd.print("W1 :");
-	lcd.print(water1temp);
-	lcd.print(" AM :");
-	lcd.print(ambienttemp);
-	lcd.setCursor(0, 1);
-	lcd.print("water1delta :");
-	lcd.print(water1delta);
-	lcd.setCursor(0, 2);
-	lcd.print(fan1starttemp);
-	lcd.print(" ");
-	lcd.print(fan1maxtemp);
-	lcd.print(" ");
-	lcd.print(fan1minduty);
-	lcd.setCursor(0, 3);
-	lcd.print(fan1current);
-	delay(3000);
-}
-
-int fan_speed_calc(int currentdelta, int mindelta, int maxdelta, int minduty) {
-
-	if (currentdelta < mindelta) {
-		return 0;
-	}
-	else if (currentdelta > maxdelta) {
-		return 100;
-	}
-	else{
-		scrap = 100 * (currentdelta - mindelta) / (maxdelta - mindelta);
-		if (scrap < minduty) {
-			return minduty;
-		}
-		return scrap;
-	}
-
-}
-
-float Thermistor(int RawADC) {
-	long Resistance;
-	float Temp;  // Dual-Purpose variable to save space.
-
-	Resistance = pad*((1024.0 / RawADC) - 1);
-	Temp = log(Resistance); // Saving the Log(resistance) so not to calculate  it 4 times later
-	Temp = 1 / (0.001129148 + (0.000234125 * Temp) + (0.0000000876741 * Temp * Temp * Temp));
-	Temp = Temp - 273.15;  // Convert Kelvin to Celsius                      
-
-	return Temp;                                      // Return the Temperature
-}
-
-
-
-
