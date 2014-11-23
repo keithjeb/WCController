@@ -61,9 +61,10 @@ struct controller_settings {
 controller_settings settings;
 int settings_address;
 
-uint8_t temp_delay;
-uint8_t screen_delay;
+uint8_t temp_delay = 1000;
+uint8_t screen_delay = 1000;
 uint8_t backlightmenu = 1; //this is needed as uint due to the way m2tk's toggles work. 
+
 
 unsigned long last_backlight;
 unsigned long last_temp;
@@ -75,7 +76,7 @@ const byte sensorpins[4] = { AMBIENTPIN, WATER1PIN, WATER2PIN, CASEPIN };
 const char sensornames[4][8] = { "Ambient", "Water 1", "Water 2", "Case  " };
 int temperatures[4]; //declare as int because we need to multiply by 100 to maintain accuracy whilst not using floats too much.
 //Pad resistor - asjust these values to calibrate.
-const int pad[4] = { 10000, 10000, 10000, 10000);
+const int pad[4] = { 10000, 10000, 10000, 10000 };
 
 //struct to describe output channels
 struct channel
@@ -283,7 +284,7 @@ M2_HLIST(el_wc_menu, NULL, list_x2l);
 // m2 object and constructor
 // Note: Use the "m2_eh_4bd" handler, which fits better to the "m2_es_arduino_rotary_encoder" 
 
-M2tk m2(&el_wc_menu, m2_es_arduino_rotary_encoder, m2_eh_4bd, m2_gh_nlc);
+M2tk m2(&m2_null_element, m2_es_arduino_rotary_encoder, m2_eh_4bd, m2_gh_nlc);
 
 //function to set the EEPROM locations
 void readaddresses(){
@@ -297,7 +298,7 @@ void loadchannels(){
 	for (byte i = 0; i < output_channels; i++){
 		EEPROM.readBlock(output_addresses[i], outputs[i]);
 	}
-	EEPROM.readBlock(settings, settings_address);
+	//EEPROM.readBlock(settings_address, settings);
 }
 void updatechannel(byte idx){
 	EEPROM.updateBlock(output_addresses[idx], outputs[idx]);
@@ -341,20 +342,24 @@ void setup() {
 	OCR2A = 100;  // for ease of math. decrease for higher frequencies.
 	pinMode(CHANNEL1PIN, OUTPUT);  // enable the PWM output
 	OCR2B = 100;  // set the PWM duty cycle to 100%
-	TCCR0A = 0x23;
+/*	TCCR0A = 0x23;
 	TCCR0B = 0x09;  // select clock
 	OCR0A = 100;  // for ease of math. decrease for higher frequencies.
 	pinMode(CHANNEL2PIN, OUTPUT);  // enable the PWM output
-	OCR0B = 100;  // set the PWM duty cycle to 100%
-
-	Serial.begin(9600);
+	OCR0B = 100;  // set the PWM duty cycle to 100%*/
+	settings.screen_delay = 100;
+	settings.temp_delay = 100;
+	Serial.begin(115200);
+	Serial.println("Setup COmplete");
+	Serial.println(settings.screen_delay);
+	Serial.println(settings.temp_delay);
 }
 
 void loop() {
 	//split the workers off into separate functions for ease of reading and sensibleness.
 	worker_monitortemps();
 	//  worker_debug();
-	//worker_reporting();
+	worker_reporting();
 	worker_backlight();
 	m2.checkKey();
 	if (m2.handleKey()) {
@@ -365,9 +370,12 @@ void loop() {
 
 void worker_backlight(void){
 	if (millis() - BACKLIGHTPOLLSPEED < last_backlight) { return; }
+	Serial.println("backlight");
+	Serial.println(last_backlight);
+	Serial.println(millis() - BACKLIGHTPOLLSPEED);
 	last_backlight = millis();
 	if (backlightmenu == 1 && !settings.backlight_on) {
-		!settings.backlight_on = true;
+		settings.backlight_on = true;
 		lcd.setBacklight(HIGH);
 	}
 	else if (backlightmenu == 0 && settings.backlight_on){
@@ -379,12 +387,15 @@ void worker_backlight(void){
 
 void worker_monitortemps(void) {
 	//return if we are too quick through the rest - defaults give us a 0.2s polling rate
-	if (millis() - settings.temp_delay < last_temp){
+	if (millis() - settings.temp_delay*100 < last_temp){
 		return;
 	}
+	Serial.println("temp");
+	Serial.println(last_temp);
+	Serial.println(millis() - settings.temp_delay);
 	last_temp = millis();
 	//read in all the temps
-	for (int i = 0; i < 4; i++);
+	for (int i = 0; i < 4; i++)
 	{
 		last_temp = millis();
 		temperatures[i] = (int)Thermistor(analogRead(sensorpins[i]), pad[i]) * 100;
@@ -428,25 +439,28 @@ void worker_monitortemps(void) {
 }
 
 void worker_reporting(void) {
-	if (m2.getRoot() != &m2_null_element){ return; }
-	if (millis() - screen_delay < last_screen) {
+	if (millis() - settings.screen_delay * 10 < last_screen) {
 		return;
 	}
+	if (m2.getRoot() != &m2_null_element){ return; }
+	
+	Serial.println(last_screen);
+	Serial.println(millis() - settings.screen_delay);
 	last_screen = millis();
 	char buffer[5];
 	for (byte i = 0; i < 4; i++) {
 		lcd.setCursor(0, i);
 		lcd.print(sensornames[i]);
-		lcd.print(" ");
-		lcd.print(temperatures[i]);
-		lcd.print((byte)0);
+		lcd.setCursor(9,i);
+		lcd.print(temperatures[i]/100);
+		lcd.write((byte)0);
 		lcd.print("C");
 		lcd.setCursor(16, i);
-		sprintf(buffer, "%3d%", outputs[i].current_cycle);
+		sprintf(buffer, "%3d%%", outputs[i].current_cycle);
 		lcd.print(buffer);
 	}
-	
-
+		if (m2.getKey() != M2_KEY_NONE)
+		m2.setRoot(&el_wc_menu);
 
 }
 
@@ -454,7 +468,7 @@ void worker_reporting(void) {
 void writeoutput(byte outputidx, byte pct) {
 	//function takes an output index and a number between 0 and 100 to set the output appropriately.
 	outputs[outputidx].current_cycle = pct;
-	switch output_pins[outputidx]{
+	switch (output_pins[outputidx]){
 	case 3:
 		if (highspeedouts[outputidx]) {
 			//this means we're adjusting OCR2B between 0 and OCR2A
@@ -462,19 +476,19 @@ void writeoutput(byte outputidx, byte pct) {
 		}
 		else{
 
-			analogWrite(output_pins[outputidx], map(pct, 0, 100, 0, 255);
+			analogWrite(output_pins[outputidx], map(pct, 0, 100, 0, 255));
 		}
 	case 5:
 		if (highspeedouts[outputidx]) {
 			//this means we're adjusting OCR0B between 0 and OCR0B
-			OCR0B = map(pct,0,100,0,OCR0A);
+			//OCR0B = map(pct,0,100,0,OCR0A);
 		}
 		else{
-			analogWrite(output_pins[outputidx], map(pct, 0, 100, 0, 255);
+			analogWrite(output_pins[outputidx], map(pct, 0, 100, 0, 255));
 		}
 	default:
 		//if we're here we're just doing an analog write because we can't high speed PWM on those pins
-		analogWrite(output_pins[outputidx], map(pct, 0, 100, 0, 255);
+		analogWrite(output_pins[outputidx], map(pct, 0, 100, 0, 255));
 	}
 
 }
