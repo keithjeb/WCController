@@ -1,6 +1,7 @@
 //Code for Menu Based water cooling control system. Provides for 2 channels of High speed (25khz) PWM output & 2 Channels low speed (490 hz) PWM output.
 //either should funtion for fan PWM control. Only channels 1 & 2 are suitable for control of MOSFETs (IRL510N tested) for voltage control (lower voltage outputs will work but sing).
 //
+//depends on EEPROMex New Liquid Crystal & M2TKLIB
 //Includes
 #include <EEPROMVar.h>
 #include <EEPROMex.h>
@@ -10,15 +11,17 @@
 #include <math.h>
 #include "utility/m2ghnlc.h"
 
+#define DEBUG 1
+
 //Analog Pins for Thermistor Connections
 #define AMBIENTPIN 0
 #define WATER1PIN 1
 #define WATER2PIN 2
 #define CASEPIN 3
 
-//PWM Pins for Channel 3 & 4 (1 and 2 will always be pin 3 (channel 1) and pin 5 (channel 2) as they're tied to timer 2
+//PWM Pins for Channel 3 & 4 (1 and 2 will always be pin 3 (channel 1) and pin 11 (channel 2) as they're tied to timer 2
 #define CHANNEL1PIN 3
-#define CHANNEL2PIN 5
+#define CHANNEL2PIN 11
 #define CHANNEL3PIN 5
 #define CHANNEL4PIN 6
 
@@ -61,8 +64,8 @@ struct controller_settings {
 controller_settings settings;
 int settings_address;
 
-uint8_t temp_delay = 1000;
-uint8_t screen_delay = 1000;
+uint16_t temp_delay = 1000;
+uint16_t screen_delay = 1000;
 uint8_t backlightmenu = 1; //this is needed as uint due to the way m2tk's toggles work. 
 
 
@@ -92,8 +95,8 @@ struct channel
 
 channel outputs[output_channels];
 const byte output_pins[output_channels] = { CHANNEL1PIN, CHANNEL2PIN, CHANNEL3PIN, CHANNEL4PIN };
-int output_addresses[output_channels];
-//set these variables to use the high speed output routines on that channel. only works if the channel pin is defined as 3 or 5
+uint16_t output_addresses[output_channels];
+//set these variables to use the high speed output routines on that channel. only works if the channel pin is defined as 3 or 11
 const boolean highspeedouts[output_channels] = { true, true, false, false };
 //menu variables to adjust the above struct
 uint8_t fan_diag_temp_ctrl;
@@ -145,60 +148,14 @@ void fn_fan_diag_commit(m2_el_fnarg_p fnarg) {
 	parsemenu(fan_diag_idx);
 	m2.setRoot(&el_wc_menu);
 }
-//definition of root menu
-m2_xmenu_entry xmenu_data[] =
-{
-	{
-		"Fan Channel 1", NULL, NULL }
-		,		/* expandable main menu entry */
-		{
-			". Temp Settings", NULL, fn_load_temp_diag }
-			,		/* function opens fan 1 dialog */
-			{
-				". Fan Settings", NULL, fn_load_fan_diag }
-				,		/* function opens fan 1 dialog */
-				{
-					"Fan Channel 2", NULL, NULL }
-					,
-					/* The label of this menu line is returned by the callback procedure */
-					{
-						". Temp Settings", NULL, fn_load_temp_diag }
-						,		/* function opens fan 1 dialog */
-						{
-							". Fan Settings", NULL, fn_load_fan_diag }
-							,		/* function opens fan 1 dialog */
-							{
-								"Fan Channel 3", NULL, NULL }
-								,
-								/* The label of this menu line is returned by the callback procedure */
-								{
-									". Temp Settings", NULL, fn_load_temp_diag }
-									,		/* function opens fan 1 dialog */
-									{
-										". Fan Settings", NULL, fn_load_fan_diag }
-										,
-										{
-											"Fan Channel 4", NULL, NULL }
-											,
-											/* The label of this menu line is returned by the callback procedure */
-											{
-												". Temp Settings", NULL, fn_load_temp_diag }
-												,		/* function opens fan 1 dialog */
-												{
-													". Fan Settings", NULL, fn_load_fan_diag }
-													,
-													{
-														"Controller", NULL, fn_load_cont_diag } // goes straight to controller dialo
-														,
-														{
-															"Hide Menu", NULL, fn_menu_hide }
-															,      //function hides the menus.
-															{
-																NULL, NULL, NULL }
-																,
-};
+//definition of root menu - will have number of fan channels *3 + controller settings & hide
+m2_xmenu_entry xmenu_data[output_channels];
+//Initialise the first channel for copying and the last 2 entries
+
+
 uint8_t el_x2l_first = 0;
 uint8_t el_x2l_cnt = 14;
+
 const char *fn_load_temp_diag(uint8_t idx, uint8_t msg) {
 	byte channel;
 	if (msg == M2_STRLIST_MSG_SELECT) {
@@ -317,6 +274,25 @@ byte degree[8] = {
 	0b00000,
 	0b00000
 };
+void setup_menu(){
+	//initialise the remainder of the menu appropriate to the number of fan channels defined.
+	for (byte i = 0; output_channels - 4; i++) {
+		xmenu_data[i].label = "Fan Channel " + i;
+		xmenu_data[i].cb = NULL;
+		xmenu_data[i].element = NULL;
+		xmenu_data[i + 1].label = ". Temp Settings";
+		xmenu_data[i + 1].element = NULL;
+		xmenu_data[i + 1].cb = fn_load_temp_diag;
+		xmenu_data[i + 2].label = ". Fan Settings";
+		xmenu_data[i + 2].element = NULL;
+		xmenu_data[i + 2].cb = fn_load_temp_diag;
+	}
+	//initialise the bottom of the menu
+	xmenu_data[output_channels - 3].label = "Controller";
+	xmenu_data[output_channels - 3].cb = fn_load_cont_diag;
+	xmenu_data[output_channels - 3].label = "Hide Menu";
+	xmenu_data[output_channels - 3].cb = fn_menu_hide;
+}
 void setup() {
 	//read in the saved config settings
 	EEPROM.setMemPool(0, EEPROMSizeUno);
@@ -335,24 +311,23 @@ void setup() {
 	lcd.setBacklightPin(BACKLIGHT_PIN, POSITIVE);
 	//create our degree char
 	lcd.createChar(0, degree);
+	setup_menu();
 
 	//begin code to change PWM frequency on Timer 2 HT bens @ arduino forums.
-	TCCR2A = 0x23;
-	TCCR2B = 0x09;  // select clock
-	OCR2A = 100;  // for ease of math. decrease for higher frequencies.
+	TCCR2A = B10100011;
+	TCCR2B = 0x09;  // set prescale to 8
 	pinMode(CHANNEL1PIN, OUTPUT);  // enable the PWM output
-	OCR2B = 100;  // set the PWM duty cycle to 100%
-/*	TCCR0A = 0x23;
-	TCCR0B = 0x09;  // select clock
-	OCR0A = 100;  // for ease of math. decrease for higher frequencies.
 	pinMode(CHANNEL2PIN, OUTPUT);  // enable the PWM output
-	OCR0B = 100;  // set the PWM duty cycle to 100%*/
-	settings.screen_delay = 100;
-	settings.temp_delay = 100;
+	OCR2B = 255;  // set the PWM duty cycle to 100%
+	OCR2A = 255;  // on both channels
+
+#ifdef DEBUG
 	Serial.begin(115200);
 	Serial.println("Setup COmplete");
 	Serial.println(settings.screen_delay);
 	Serial.println(settings.temp_delay);
+#endif // DEBUG
+
 }
 
 void loop() {
@@ -370,9 +345,12 @@ void loop() {
 
 void worker_backlight(void){
 	if (millis() - BACKLIGHTPOLLSPEED < last_backlight) { return; }
+#ifdef DEBUG
 	Serial.println("backlight");
 	Serial.println(last_backlight);
 	Serial.println(millis() - BACKLIGHTPOLLSPEED);
+#endif // DEBUG
+
 	last_backlight = millis();
 	if (backlightmenu == 1 && !settings.backlight_on) {
 		settings.backlight_on = true;
@@ -387,18 +365,23 @@ void worker_backlight(void){
 
 void worker_monitortemps(void) {
 	//return if we are too quick through the rest - defaults give us a 0.2s polling rate
-	if (millis() - settings.temp_delay*100 < last_temp){
+	if (millis() - settings.temp_delay < last_temp){
 		return;
 	}
+
+#ifdef DEBUG
 	Serial.println("temp");
 	Serial.println(last_temp);
 	Serial.println(millis() - settings.temp_delay);
+#endif // DEBUG
+
 	last_temp = millis();
 	//read in all the temps
 	for (int i = 0; i < 4; i++)
 	{
 		last_temp = millis();
 		temperatures[i] = (int)Thermistor(analogRead(sensorpins[i]), pad[i]) * 100;
+		Serial.println(analogRead(sensorpins[i]));
 	}
 	//now compare based on which sensor we're linked to
 	for (int i = 0; i < output_channels; i++) {
@@ -439,27 +422,31 @@ void worker_monitortemps(void) {
 }
 
 void worker_reporting(void) {
-	if (millis() - settings.screen_delay * 10 < last_screen) {
+	if (millis() - settings.screen_delay < last_screen) {
 		return;
 	}
 	if (m2.getRoot() != &m2_null_element){ return; }
-	
+
+#ifdef DEBUG
+	Serial.println("Screen");
 	Serial.println(last_screen);
 	Serial.println(millis() - settings.screen_delay);
+#endif // DEBUG
+
 	last_screen = millis();
 	char buffer[5];
 	for (byte i = 0; i < 4; i++) {
 		lcd.setCursor(0, i);
 		lcd.print(sensornames[i]);
-		lcd.setCursor(9,i);
-		lcd.print(temperatures[i]/100);
+		lcd.setCursor(9, i);
+		lcd.print(temperatures[i] / 100);
 		lcd.write((byte)0);
 		lcd.print("C");
 		lcd.setCursor(16, i);
 		sprintf(buffer, "%3d%%", outputs[i].current_cycle);
 		lcd.print(buffer);
 	}
-		if (m2.getKey() != M2_KEY_NONE)
+	if (m2.getKey() != M2_KEY_NONE)
 		m2.setRoot(&el_wc_menu);
 
 }
@@ -471,21 +458,22 @@ void writeoutput(byte outputidx, byte pct) {
 	switch (output_pins[outputidx]){
 	case 3:
 		if (highspeedouts[outputidx]) {
-			//this means we're adjusting OCR2B between 0 and OCR2A
-			OCR2B = map(pct,0,100,0,OCR2A);
+			//this means we're adjusting OCR2B between 0 and 255
+			OCR2B = map(pct, 0, 100, 0, 255);
 		}
 		else{
-
 			analogWrite(output_pins[outputidx], map(pct, 0, 100, 0, 255));
 		}
-	case 5:
+		break;
+	case 11:
 		if (highspeedouts[outputidx]) {
-			//this means we're adjusting OCR0B between 0 and OCR0B
-			//OCR0B = map(pct,0,100,0,OCR0A);
+			//this means we're adjusting OCR2AB between 0 and 255
+			OCR2A = map(pct, 0, 100, 0, 255);
 		}
 		else{
 			analogWrite(output_pins[outputidx], map(pct, 0, 100, 0, 255));
 		}
+		break;
 	default:
 		//if we're here we're just doing an analog write because we can't high speed PWM on those pins
 		analogWrite(output_pins[outputidx], map(pct, 0, 100, 0, 255));
