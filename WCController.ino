@@ -149,9 +149,58 @@ void fn_fan_diag_commit(m2_el_fnarg_p fnarg) {
 	m2.setRoot(&el_wc_menu);
 }
 //definition of root menu - will have number of fan channels *3 + controller settings & hide
-m2_xmenu_entry xmenu_data[output_channels];
-//Initialise the first channel for copying and the last 2 entries
-
+//definition of root menu
+m2_xmenu_entry xmenu_data[] =
+{
+	{
+		"Fan Channel 1", NULL, NULL }
+		,		/* expandable main menu entry */
+		{
+			". Temp Settings", NULL, fn_load_temp_diag }
+			,		/* function opens fan 1 dialog */
+			{
+				". Fan Settings", NULL, fn_load_fan_diag }
+				,		/* function opens fan 1 dialog */
+				{
+					"Fan Channel 2", NULL, NULL }
+					,
+					/* The label of this menu line is returned by the callback procedure */
+					{
+						". Temp Settings", NULL, fn_load_temp_diag }
+						,		/* function opens fan 1 dialog */
+						{
+							". Fan Settings", NULL, fn_load_fan_diag }
+							,		/* function opens fan 1 dialog */
+							{
+								"Fan Channel 3", NULL, NULL }
+								,
+								/* The label of this menu line is returned by the callback procedure */
+								{
+									". Temp Settings", NULL, fn_load_temp_diag }
+									,		/* function opens fan 1 dialog */
+									{
+										". Fan Settings", NULL, fn_load_fan_diag }
+										,
+										{
+											"Fan Channel 4", NULL, NULL }
+											,
+											/* The label of this menu line is returned by the callback procedure */
+											{
+												". Temp Settings", NULL, fn_load_temp_diag }
+												,		/* function opens fan 1 dialog */
+												{
+													". Fan Settings", NULL, fn_load_fan_diag }
+													,
+													{
+														"Controller", NULL, fn_load_cont_diag } // goes straight to controller dialo
+														,
+														{
+															"Hide Menu", NULL, fn_menu_hide }
+															,      //function hides the menus.
+															{
+																NULL, NULL, NULL }
+																,
+};
 
 uint8_t el_x2l_first = 0;
 uint8_t el_x2l_cnt = 14;
@@ -233,14 +282,14 @@ const char *fn_menu_hide(uint8_t idx, uint8_t msg) {
 	return "";
 }
 
+
+// m2 object and constructor
+// Note: Use the "m2_eh_4bd" handler, which fits better to the "m2_es_arduino_rotary_encoder" 
 M2_X2LMENU(el_x2l_main, "l4e1w14", &el_x2l_first, &el_x2l_cnt, xmenu_data, '+', '-', '\0');
 M2_VSB(el_x2l_vsb, "l5W1r1", &el_x2l_first, &el_x2l_cnt);
 M2_LIST(list_x2l) = {
 	&el_x2l_main, &el_x2l_vsb };
 M2_HLIST(el_wc_menu, NULL, list_x2l);
-// m2 object and constructor
-// Note: Use the "m2_eh_4bd" handler, which fits better to the "m2_es_arduino_rotary_encoder" 
-
 M2tk m2(&m2_null_element, m2_es_arduino_rotary_encoder, m2_eh_4bd, m2_gh_nlc);
 
 //function to set the EEPROM locations
@@ -263,6 +312,7 @@ void updatechannel(byte idx){
 void updatesettings(byte idx){
 	EEPROM.updateBlock(settings_address, settings);
 }
+
 //define a degree
 byte degree[8] = {
 	0b00111,
@@ -274,32 +324,12 @@ byte degree[8] = {
 	0b00000,
 	0b00000
 };
-void setup_menu(){
-	//initialise the remainder of the menu appropriate to the number of fan channels defined.
-	for (byte i = 0; output_channels - 4; i++) {
-		xmenu_data[i].label = "Fan Channel " + i;
-		xmenu_data[i].cb = NULL;
-		xmenu_data[i].element = NULL;
-		xmenu_data[i + 1].label = ". Temp Settings";
-		xmenu_data[i + 1].element = NULL;
-		xmenu_data[i + 1].cb = fn_load_temp_diag;
-		xmenu_data[i + 2].label = ". Fan Settings";
-		xmenu_data[i + 2].element = NULL;
-		xmenu_data[i + 2].cb = fn_load_temp_diag;
-	}
-	//initialise the bottom of the menu
-	xmenu_data[output_channels - 3].label = "Controller";
-	xmenu_data[output_channels - 3].cb = fn_load_cont_diag;
-	xmenu_data[output_channels - 3].label = "Hide Menu";
-	xmenu_data[output_channels - 3].cb = fn_menu_hide;
-}
+
 void setup() {
 	//read in the saved config settings
 	EEPROM.setMemPool(0, EEPROMSizeUno);
 	readaddresses();
 	loadchannels();
-	//setup menu
-
 	m2_SetNewLiquidCrystal(&lcd, 20, 4);
 	// define button for the select message
 	m2.setPin(M2_KEY_SELECT, BTNPIN);
@@ -311,7 +341,7 @@ void setup() {
 	lcd.setBacklightPin(BACKLIGHT_PIN, POSITIVE);
 	//create our degree char
 	lcd.createChar(0, degree);
-	setup_menu();
+
 
 	//begin code to change PWM frequency on Timer 2 HT bens @ arduino forums.
 	TCCR2A = B10100011;
@@ -372,7 +402,7 @@ void worker_monitortemps(void) {
 #ifdef DEBUG
 	Serial.println("temp");
 	Serial.println(last_temp);
-	Serial.println(millis() - settings.temp_delay);
+	Serial.println(settings.temp_delay);
 #endif // DEBUG
 
 	last_temp = millis();
@@ -381,20 +411,27 @@ void worker_monitortemps(void) {
 	{
 		last_temp = millis();
 		temperatures[i] = (int)Thermistor(analogRead(sensorpins[i]), pad[i]) * 100;
-		Serial.println(analogRead(sensorpins[i]));
+		Serial.print(i);
+		Serial.print(" = ");
+		Serial.println(temperatures[i]);
 	}
 	//now compare based on which sensor we're linked to
 	for (int i = 0; i < output_channels; i++) {
 		int delta;
+		Serial.print(i);
 		//check for temperature control
 		if (!outputs[i].temp_controlled){
 			//set the duty cycle to min duty cycle then do the next fan
 			writeoutput(i, outputs[i].min_duty_cycle);
+			Serial.print("Writing min duty cylce because we're not on temp control");
 			continue;
+			
+			
 		}
 		//check if we're over our absolutes, if so write max and then next fan
 		if (temperatures[outputs[i].linked_sensor] > outputs[i].absolute_max * 100) {
 			writeoutput(i, 100);
+			Serial.print("writing full because we're over absolute max");
 			continue;
 		}
 
@@ -405,16 +442,20 @@ void worker_monitortemps(void) {
 		//check if we need to go to 0
 		if (delta <= outputs[i].starting_temp * 100){
 			writeoutput(i, 0);
+			Serial.println("Writing 0 because we're below start temp");
 			continue;
 		}
 		//check if we need to go straight to full speed
 		else if (delta >= outputs[i].full_temp * 100) {
 			writeoutput(i, 100);
+			Serial.println("Writing full speed because we're over full temp");
 			continue;
 		}
 		else {
 			//map the current temp to somewhere between minimum cycle and 100% and set it.
+			
 			writeoutput(i, map(delta, outputs[i].starting_temp * 100, outputs[i].full_temp * 100, outputs[i].min_duty_cycle, 100));
+			Serial.println("Writing variable because we're somewhere on the map");
 			continue;
 		}
 	}
