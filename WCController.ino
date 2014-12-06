@@ -246,6 +246,8 @@ const char *fn_load_cont_diag(uint8_t idx, uint8_t msg) {
 	return "";
 }
 void loadtomenu(byte chan){
+	Serial.println("loading menu");
+	
 	if (outputs[chan].temp_controlled){
 		fan_diag_temp_ctrl = 1;
 	}
@@ -260,6 +262,7 @@ void loadtomenu(byte chan){
 }
 
 void parsemenu(byte chan){
+	//takes channel and 0 for temp menu 1 for fan diag
 	if (fan_diag_temp_ctrl = 1){
 		outputs[chan].temp_controlled = true;
 	}
@@ -308,8 +311,11 @@ void loadchannels(){
 }
 void updatechannel(byte idx){
 	EEPROM.updateBlock(output_addresses[idx], outputs[idx]);
+	Serial.println("updating channel");
+	Serial.println(idx);
+
 }
-void updatesettings(byte idx){
+void updatesettings(){
 	EEPROM.updateBlock(settings_address, settings);
 }
 
@@ -348,8 +354,8 @@ void setup() {
 	TCCR2B = 0x09;  // set prescale to 8
 	pinMode(CHANNEL1PIN, OUTPUT);  // enable the PWM output
 	pinMode(CHANNEL2PIN, OUTPUT);  // enable the PWM output
-	OCR2B = 255;  // set the PWM duty cycle to 100%
-	OCR2A = 255;  // on both channels
+	OCR2B = 0;  // set the PWM duty cycle to 100%
+	OCR2A = 0;  // on both channels
 
 #ifdef DEBUG
 	Serial.begin(115200);
@@ -357,7 +363,7 @@ void setup() {
 	Serial.println(settings.screen_delay);
 	Serial.println(settings.temp_delay);
 #endif // DEBUG
-
+	settings.temp_delay = 255;
 }
 
 void loop() {
@@ -375,11 +381,7 @@ void loop() {
 
 void worker_backlight(void){
 	if (millis() - BACKLIGHTPOLLSPEED < last_backlight) { return; }
-#ifdef DEBUG
-	Serial.println("backlight");
-	Serial.println(last_backlight);
-	Serial.println(millis() - BACKLIGHTPOLLSPEED);
-#endif // DEBUG
+
 
 	last_backlight = millis();
 	if (backlightmenu == 1 && !settings.backlight_on) {
@@ -395,7 +397,7 @@ void worker_backlight(void){
 
 void worker_monitortemps(void) {
 	//return if we are too quick through the rest - defaults give us a 0.2s polling rate
-	if (millis() - settings.temp_delay < last_temp){
+	if (millis() - settings.temp_delay *10 < last_temp){
 		return;
 	}
 
@@ -411,9 +413,8 @@ void worker_monitortemps(void) {
 	{
 		last_temp = millis();
 		temperatures[i] = (int)Thermistor(analogRead(sensorpins[i]), pad[i]) * 100;
-		Serial.print(i);
-		Serial.print(" = ");
-		Serial.println(temperatures[i]);
+		Serial.println("temps");
+		Serial.print(i); Serial.print("="); Serial.println(temperatures[i]);
 	}
 	//now compare based on which sensor we're linked to
 	for (int i = 0; i < output_channels; i++) {
@@ -436,12 +437,14 @@ void worker_monitortemps(void) {
 		}
 
 		//we're on delta control so calculate it
-		delta = temperatures[i] - temperatures[0];
+		delta = temperatures[outputs[i].linked_sensor] - temperatures[0];
 		//only use positive values between 0 and 100C
 		constrain(delta, 0, 10000);
 		//check if we need to go to 0
 		if (delta <= outputs[i].starting_temp * 100){
 			writeoutput(i, 0);
+			Serial.println(outputs[i].starting_temp * 100);
+			Serial.println(delta);
 			Serial.println("Writing 0 because we're below start temp");
 			continue;
 		}
@@ -468,11 +471,7 @@ void worker_reporting(void) {
 	}
 	if (m2.getRoot() != &m2_null_element){ return; }
 
-#ifdef DEBUG
-	Serial.println("Screen");
-	Serial.println(last_screen);
-	Serial.println(millis() - settings.screen_delay);
-#endif // DEBUG
+
 
 	last_screen = millis();
 	char buffer[5];
@@ -496,15 +495,23 @@ void worker_reporting(void) {
 void writeoutput(byte outputidx, byte pct) {
 	//function takes an output index and a number between 0 and 100 to set the output appropriately.
 	outputs[outputidx].current_cycle = pct;
+	Serial.print("Writing pin ");
+	Serial.print(output_pins[outputidx]);
+	Serial.print(" to ");
+	Serial.print(pct);
+	Serial.print(" mapped to ");
+	Serial.println(map(pct, 0, 100, 0, 255))
 	switch (output_pins[outputidx]){
 	case 3:
-		if (highspeedouts[outputidx]) {
+/*		if (highspeedouts[outputidx]) {
 			//this means we're adjusting OCR2B between 0 and 255
 			OCR2B = map(pct, 0, 100, 0, 255);
+			Serial.print("Setting OCR2B ");
+			Serial.println(OCR2B);
 		}
-		else{
+		else{*/
 			analogWrite(output_pins[outputidx], map(pct, 0, 100, 0, 255));
-		}
+		//}
 		break;
 	case 11:
 		if (highspeedouts[outputidx]) {
